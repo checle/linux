@@ -676,7 +676,9 @@ struct ufs2_inode {
 		} ui_addr;
 	__u8	ui_symlink[2*4*(UFS_NDADDR+UFS_NINDIR)];/* 0x28 fast symlink */
 	} ui_u2;
-	__fs64     ui_spare[3];    /* 232: Reserved; currently unused */
+	__fs32     ui_snapshot;    /* 232: Root of snapshot layer */
+	__fs32     ui_parent;      /* 236: Inode parent layer */
+	__fs64     ui_spare[2];    /* 240: Reserved; currently unused */
 };
 
 

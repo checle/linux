@@ -632,6 +632,7 @@ static int ufs2_read_inode(struct inode *inode, struct ufs2_inode *ufs2_inode)
 	inode->i_mtime.tv_nsec = fs32_to_cpu(sb, ufs2_inode->ui_mtimensec);
 	inode->i_blocks = fs64_to_cpu(sb, ufs2_inode->ui_blocks);
 	inode->i_generation = fs32_to_cpu(sb, ufs2_inode->ui_gen);
+	inode->i_snapshot = fs32_to_cpu(sb, ufs2_inode->ui_snapshot);
 	ufsi->i_flags = fs32_to_cpu(sb, ufs2_inode->ui_flags);
 	/*
 	ufsi->i_shadow = fs32_to_cpu(sb, ufs_inode->ui_u3.ui_sun.ui_shadow);
@@ -732,6 +733,7 @@ static void ufs1_update_inode(struct inode *inode, struct ufs_inode *ufs_inode)
 	ufs_inode->ui_blocks = cpu_to_fs32(sb, inode->i_blocks);
 	ufs_inode->ui_flags = cpu_to_fs32(sb, ufsi->i_flags);
 	ufs_inode->ui_gen = cpu_to_fs32(sb, inode->i_generation);
+	ufs_inode->ui_snapshot = cpu_to_fs32(sb, inode->i_snapshot);
 
 	if ((UFS_SB(sb)->s_flags & UFS_UID_MASK) == UFS_UID_EFT) {
 		ufs_inode->ui_u3.ui_sun.ui_shadow = cpu_to_fs32(sb, ufsi->i_shadow);
