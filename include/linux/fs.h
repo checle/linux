@@ -661,6 +661,7 @@ struct inode {
 	};
 
 	__u32			i_generation;
+	unsigned long		i_snapshot;
 
 #ifdef CONFIG_FSNOTIFY
 	__u32			i_fsnotify_mask; /* all events this inode cares about */
