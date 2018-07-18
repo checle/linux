@@ -213,8 +213,15 @@ static int ufs_unlink(struct inode *dir, struct dentry *dentry)
 	int err = -ENOENT;
 
 	de = ufs_find_entry(dir, &dentry->d_name, &page);
-	if (!de)
-		goto out;
+	if (!de) {
+		do {
+			if (!dir->i_precursor)
+				goto out;
+			dir = ufs_iget(dir->i_sb, dir->i_precursor);
+			de = ufs_find_entry(dir, &dentry->d_name, &page);
+		} while (!de);
+		return ufs_add_link(dentry, NULL);
+	}
 
 	err = ufs_delete_entry(dir, de, page);
 	if (err)
@@ -249,6 +256,7 @@ static int ufs_rename(struct inode *old_dir, struct dentry *old_dentry,
 {
 	struct inode *old_inode = d_inode(old_dentry);
 	struct inode *new_inode = d_inode(new_dentry);
+	struct inode *old_anc = old_dir;
 	struct page *dir_page = NULL;
 	struct ufs_dir_entry * dir_de = NULL;
 	struct page *old_page;
@@ -259,8 +267,14 @@ static int ufs_rename(struct inode *old_dir, struct dentry *old_dentry,
 		return -EINVAL;
 
 	old_de = ufs_find_entry(old_dir, &old_dentry->d_name, &old_page);
-	if (!old_de)
-		goto out;
+	if (!old_de) {
+		do {
+			if (!old_anc->i_precursor)
+				goto out;
+			old_anc = ufs_iget(old_anc->i_sb, old_anc->i_precursor);
+			old_de = ufs_find_entry(old_anc, &old_dentry->d_name, &old_page);
+		} while (!old_de);
+	}
 
 	if (S_ISDIR(old_inode->i_mode)) {
 		err = -EIO;
@@ -300,7 +314,13 @@ static int ufs_rename(struct inode *old_dir, struct dentry *old_dentry,
 	 */
 	old_inode->i_ctime = current_time(old_inode);
 
-	ufs_delete_entry(old_dir, old_de, old_page);
+	if (old_dir == old_anc)
+		ufs_delete_entry(old_dir, old_de, old_page);
+	else {
+		err = ufs_add_link(old_dentry, NULL);
+		if (err)
+			goto out_dir;
+	}
 	mark_inode_dirty(old_inode);
 
 	if (dir_de) {
@@ -327,6 +347,13 @@ out:
 	return err;
 }
 
+struct inode *ufs_get_precursor(struct inode *inode)
+{
+	if (inode->i_precursor)
+		return ufs_iget(inode->i_sb, inode->i_precursor);
+	return NULL;
+}
+
 const struct inode_operations ufs_dir_inode_operations = {
 	.create		= ufs_create,
 	.lookup		= ufs_lookup,
@@ -337,4 +364,5 @@ const struct inode_operations ufs_dir_inode_operations = {
 	.rmdir		= ufs_rmdir,
 	.mknod		= ufs_mknod,
 	.rename		= ufs_rename,
+	.get_precursor	= ufs_get_precursor,
 };

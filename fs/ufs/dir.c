@@ -72,11 +72,15 @@ ino_t ufs_inode_by_name(struct inode *dir, const struct qstr *qstr)
 	ino_t res = 0;
 	struct ufs_dir_entry *de;
 	struct page *page;
-	
+
+find:
 	de = ufs_find_entry(dir, qstr, &page);
 	if (de) {
 		res = fs32_to_cpu(dir->i_sb, de->d_ino);
 		ufs_put_page(page);
+	} else if (dir->i_precursor) {
+		dir = ufs_iget(dir->i_sb, dir->i_precursor);
+		goto find;
 	}
 	return res;
 }
@@ -387,8 +391,13 @@ got_it:
 
 	ufs_set_de_namlen(sb, de, namelen);
 	memcpy(de->d_name, name, namelen + 1);
-	de->d_ino = cpu_to_fs32(sb, inode->i_ino);
-	ufs_set_de_type(sb, de, inode->i_mode);
+	if (inode) {
+		de->d_ino = cpu_to_fs32(sb, inode->i_ino);
+		ufs_set_de_type(sb, de, inode->i_mode);
+	} else {
+		de->d_ino = cpu_to_fs32(sb, dir->i_ino);
+		de->d_u.d_44.d_type = DT_WHT;
+	}
 
 	err = ufs_commit_chunk(page, pos, rec_len);
 	dir->i_mtime = dir->i_ctime = current_time(dir);
@@ -643,4 +652,5 @@ const struct file_operations ufs_dir_operations = {
 	.iterate_shared	= ufs_readdir,
 	.fsync		= generic_file_fsync,
 	.llseek		= generic_file_llseek,
+	.clone		= generic_clone_dir,
 };

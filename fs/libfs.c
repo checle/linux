@@ -1254,3 +1254,49 @@ bool is_empty_dir_inode(struct inode *inode)
 	return (inode->i_fop == &empty_dir_operations) &&
 		(inode->i_op == &empty_dir_inode_operations);
 }
+
+int generic_clone_dir(struct file * old_file, struct inode * dir,
+	struct file *new_file, unsigned int flags)
+{
+	struct dentry *new_dentry = new_file->f_path.dentry;
+	struct dentry *old_dentry = old_file->f_path.dentry;
+	struct inode *inode = d_inode(new_dentry);
+	struct inode *old_inode, *new_inode;
+	int error;
+
+	inode->i_ctime = current_time(inode);
+	inode_inc_link_count(inode);
+	ihold(inode);
+
+	error = dir->i_op->mkdir(dir, new_dentry, inode->i_mode & ~S_IFMT);
+	if (error)
+		goto fail_new;
+
+	new_inode = d_inode(new_file->f_path.dentry);
+	new_inode->i_precursor = new_inode->i_origin = inode->i_ino;
+	mark_inode_dirty(new_inode);
+
+	error = dir->i_op->mkdir(dir, old_dentry, inode->i_mode & ~S_IFMT);
+	if (error)
+		goto fail_old;
+
+	old_inode = d_inode(old_dentry);
+	old_inode->i_precursor = inode->i_ino;
+	old_inode->i_origin = inode->i_origin;
+	old_inode->i_uid = inode->i_uid;
+	old_inode->i_gid = inode->i_gid;
+	old_inode->i_atime = inode->i_atime;
+	old_inode->i_ctime = inode->i_ctime;
+	old_inode->i_mtime = inode->i_mtime;
+	mark_inode_dirty(old_inode);
+
+	return 0;
+
+fail_old:
+	dir->i_op->unlink(dir, new_dentry);
+fail_new:
+	inode_dec_link_count(inode);
+	iput(inode);
+	return error;
+}
+EXPORT_SYMBOL(generic_clone_dir);

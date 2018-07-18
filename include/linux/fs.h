@@ -661,7 +661,8 @@ struct inode {
 	};
 
 	__u32			i_generation;
-	unsigned long		i_snapshot;
+	unsigned long		i_origin;
+	unsigned long		i_precursor;
 
 #ifdef CONFIG_FSNOTIFY
 	__u32			i_fsnotify_mask; /* all events this inode cares about */
@@ -1744,6 +1745,7 @@ struct file_operations {
 #ifndef CONFIG_MMU
 	unsigned (*mmap_capabilities)(struct file *);
 #endif
+	int (*clone)(struct file *, struct inode *, struct file *, unsigned int);
 	ssize_t (*copy_file_range)(struct file *, loff_t, struct file *,
 			loff_t, size_t, unsigned int);
 	int (*clone_file_range)(struct file *, loff_t, struct file *, loff_t,
@@ -1757,6 +1759,7 @@ struct inode_operations {
 	const char * (*get_link) (struct dentry *, struct inode *, struct delayed_call *);
 	int (*permission) (struct inode *, int);
 	struct posix_acl * (*get_acl)(struct inode *, int);
+	struct inode * (*get_precursor) (struct inode *);
 
 	int (*readlink) (struct dentry *, char __user *,int);
 
@@ -3091,6 +3094,8 @@ void inode_set_bytes(struct inode *inode, loff_t bytes);
 const char *simple_get_link(struct dentry *, struct inode *,
 			    struct delayed_call *);
 extern const struct inode_operations simple_symlink_inode_operations;
+extern int generic_clone_dir(struct file *, struct inode *,
+	struct file *, unsigned int);
 
 extern int iterate_dir(struct file *, struct dir_context *);
 

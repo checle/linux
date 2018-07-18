@@ -71,6 +71,14 @@ int vfs_getattr_nosec(const struct path *path, struct kstat *stat,
 {
 	struct inode *inode = d_backing_inode(path->dentry);
 
+	if (query_flags & AT_STATX_PRECURSOR) {
+		if (!inode->i_op->get_precursor)
+			return -ENOTSUPP;
+		inode = inode->i_op->get_precursor(inode);
+		if (!inode)
+			return -ENOENT;
+	}
+
 	memset(stat, 0, sizeof(*stat));
 	stat->result_mask |= STATX_BASIC_STATS;
 	request_mask &= STATX_ALL;
