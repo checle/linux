@@ -793,20 +793,41 @@ not_empty:
 	return 0;
 }
 
-static int ext2_clone_origin(struct inode *dir, struct dentry *dentry, struct inode *origin)
+static int ext2_exchange_data(struct inode *inode1, struct inode *inode2)
 {
-	struct ext2_inode_info *eo = EXT2_I(origin);
-	struct inode * inode;
-	struct ext2_inode_info *ei;
+	struct ext2_inode_info *ei2, *ei1;
+	struct address_space data;
+	int i;
+
+	memcpy(&data, &inode1->i_data, sizeof(struct address_space));
+	memcpy(&inode1->i_data, &inode2->i_data, sizeof(struct address_space));
+	memcpy(&inode2->i_data, &data, sizeof(struct address_space));
+
+	ei2 = EXT2_I(inode1);
+	ei1 = EXT2_I(inode2);
+
+	for (i = 0; i < EXT2_N_BLOCKS; i++) {
+		__le32 v = ei1->i_data[i];
+
+		ei1->i_data[i] = ei2->i_data[i];
+		ei2->i_data[i] = v;
+	}
+
+	return 0;
+}
+
+static struct inode *ext2_new_ancestor(struct dentry *dentry)
+{
+	struct inode *template = d_inode(dentry);
+	struct inode *dir = d_inode(dentry->d_parent);
+	struct inode *inode;
 	int err;
 
-	inode_inc_link_count(dir);
-
-	inode = ext2_new_inode(dir, S_IFDIR | (origin->i_mode & ~S_IFMT), &dentry->d_name);
-	err = PTR_ERR(inode);
+	inode = ext2_new_inode(dir, S_IFDIR | (template->i_mode & ~S_IFMT), &dentry->d_name);
 	if (IS_ERR(inode))
-		goto out_dir;
-	ei = EXT2_I(inode);
+		return inode;
+
+	EXT2_I(inode)->i_ancestor = EXT2_I(template)->i_ancestor;
 
 	inode->i_op = &ext2_dir_inode_operations;
 	inode->i_fop = &ext2_dir_operations;
@@ -815,74 +836,65 @@ static int ext2_clone_origin(struct inode *dir, struct dentry *dentry, struct in
 	else
 		inode->i_mapping->a_ops = &ext2_aops;
 
-	ei->i_ancestor = origin->i_ino;
-	ei->i_origin = eo->i_origin;
-	inode->i_uid = origin->i_uid;
-	inode->i_gid = origin->i_gid;
-	inode->i_atime = origin->i_atime;
-	inode->i_ctime = origin->i_ctime;
-	inode->i_mtime = origin->i_mtime;
-
-	inode_inc_link_count(inode);
-
 	err = ext2_make_empty(inode, dir);
 	if (err)
-		goto out_fail;
+		goto fail;
 
-	err = ext2_add_link(dentry, inode);
+	err = ext2_exchange_data(template, inode);
 	if (err)
-		goto out_fail;
+		goto fail;
 
-	d_instantiate(dentry, inode);
+	return inode;
 
-	return 0;
-
-out_fail:
-	inode_dec_link_count(inode);
-	inode_dec_link_count(inode);
+fail:
+	clear_nlink(inode);
 	unlock_new_inode(inode);
 	iput(inode);
-out_dir:
-	inode_dec_link_count(dir);
-	return err;
+	return ERR_PTR(err);
 }
 
-int ext2_clone_dir_range(struct file *old_file, loff_t old_off,
-		struct file *new_file, loff_t new_off, u64 len)
+int ext2_clone_dir_range(struct file *file1, loff_t off1,
+		struct file *file2, loff_t off2, u64 len)
 {
-	struct dentry *old_dentry = old_file->f_path.dentry;
-	struct dentry *new_dentry = new_file->f_path.dentry;
-	struct inode *old_dir = d_inode(old_dentry->d_parent);
-	struct inode *new_dir = d_inode(new_dentry->d_parent);
-	struct inode *inode = d_inode(new_dentry);
-	struct inode *old_inode, *new_inode;
-	struct ext2_inode_info *new_ei;
+	struct dentry *dentry1 = file1->f_path.dentry;
+	struct dentry *dentry_2 = file2->f_path.dentry;
+	struct inode *inode1 = d_inode(dentry1), *inode2, *ancestor;
 	int err;
 
-	if (old_off || new_off || len)
-		return -ENOTSUPP;
+	if (off1 || off2 || len)
+		return -EISDIR;
 
-	err = ext2_clone_origin(old_dir, old_dentry, inode);
-	old_inode = d_inode(old_dentry);
+	ancestor = ext2_new_ancestor(dentry1);
+	err = PTR_ERR(ancestor);
+	if (IS_ERR(ancestor))
+		goto fail;
+
+	EXT2_I(inode1)->i_ancestor = ancestor->i_ino;
+
+	inode2 = ext2_new_ancestor(dentry1);
+	err = PTR_ERR(inode2);
+	if (IS_ERR(inode2))
+		goto fail_ancestor;
+
+	EXT2_I(inode2)->i_origin = inode2->i_ino;
+
+	err = ext2_add_link(dentry_2, inode2);
 	if (err)
-		goto fail_old;
+		goto fail_inode2;
 
-	err = ext2_clone_origin(new_dir, new_dentry, inode);
-	if (err)
-		goto fail_new;
-	new_inode = d_inode(new_dentry);
-	new_ei = EXT2_I(new_inode);
-	new_ei->i_origin = new_inode->i_ino;
+	unlock_new_inode(ancestor);
+	unlock_new_inode(inode2);
+	return err;
 
-	unlock_new_inode(old_inode);
-	unlock_new_inode(new_inode);
-	return 0;
-
-fail_new:
-	old_dir->i_op->unlink(old_dir, old_dentry);
-fail_old:
-	inode_dec_link_count(inode);
-	iput(inode);
+fail_inode2:
+	clear_nlink(inode2);
+	unlock_new_inode(inode2);
+	iput(inode2);
+fail_ancestor:
+	clear_nlink(ancestor);
+	unlock_new_inode(ancestor);
+	iput(ancestor);
+fail:
 	return err;
 }
 
