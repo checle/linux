@@ -1502,11 +1502,17 @@ static struct dentry *__lookup_hash(const struct qstr *name,
 	if (unlikely(!dentry))
 		return ERR_PTR(-ENOMEM);
 
-	old = dir->i_op->lookup(dir, dentry, flags);
-	if (unlikely(old)) {
-		dput(dentry);
-		dentry = old;
-	}
+	do {
+		old = dir->i_op->lookup(dir, dentry, flags);
+		if (unlikely(old)) {
+			dput(dentry);
+			dentry = old;
+			break;
+		}
+		if (!dir->i_op->get_precursor)
+			break;
+		dir = dir->i_op->get_precursor(dir);
+	} while (dir);
 	return dentry;
 }
 
@@ -1627,12 +1633,18 @@ again:
 			}
 		}
 	} else {
-		old = inode->i_op->lookup(inode, dentry, flags);
+		do {
+			old = inode->i_op->lookup(inode, dentry, flags);
+			if (unlikely(!inode->i_op->get_precursor || old))
+				break;
+			inode = inode->i_op->get_precursor(inode);
+		} while (inode);
 		d_lookup_done(dentry);
 		if (unlikely(old)) {
 			dput(dentry);
 			dentry = old;
 		}
+		return dentry;
 	}
 	return dentry;
 }
@@ -3196,8 +3208,14 @@ static int lookup_open(struct nameidata *nd, struct path *path,
 
 no_open:
 	if (d_in_lookup(dentry)) {
-		struct dentry *res = dir_inode->i_op->lookup(dir_inode, dentry,
-							     nd->flags);
+		struct dentry *res;
+		do {
+			res = dir_inode->i_op->lookup(dir_inode, dentry,
+						      nd->flags);
+			if (unlikely(!dir_inode->i_op->get_precursor || res))
+				break;
+			dir_inode = dir_inode->i_op->get_precursor(dir_inode);
+		} while (dir_inode);
 		d_lookup_done(dentry);
 		if (unlikely(res)) {
 			if (IS_ERR(res)) {

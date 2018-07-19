@@ -1680,6 +1680,7 @@ typedef int (*filldir_t)(struct dir_context *, const char *, int, loff_t, u64,
 struct dir_context {
 	filldir_t actor;
 	loff_t pos;
+	struct inode *layer;
 };
 
 struct block_device_operations;

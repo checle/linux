@@ -130,19 +130,31 @@ SYSCALL_DEFINE3(old_readdir, unsigned int, fd,
 		.ctx.actor = fillonedir,
 		.dirent = dirent
 	};
+	struct inode *inode;
 
 	if (!f.file)
 		return -EBADF;
+	inode = file_inode(f.file);
 
+iterate:
+	buf.ctx.layer = inode;
 	error = iterate_dir(f.file, &buf.ctx);
 	if (buf.result)
 		error = buf.result;
+	else if (inode->i_op->get_precursor) {
+		inode = inode->i_op->get_precursor(inode);
+		if (inode)
+			goto iterate;
+	}
 
 	fdput_pos(f);
 	return error;
 }
 
 #endif /* __ARCH_WANT_OLD_READDIR */
+
+#define READDIR_DIRENT_CACHE_SIZE 10
+#define READDIR_DIRENT_FILTER_SIZE 10
 
 /*
  * New, all-improved, singing, dancing, iBCS2-compliant getdents()
@@ -162,6 +174,20 @@ struct getdents_callback {
 	int count;
 	int error;
 };
+
+static int addname(struct getdents_callback *buf, const char *name, unsigned int namlen)
+{
+	int res = -1;
+	unsigned int hash = full_name_hash(buf, name, namlen);
+	char v = hash & UCHAR_MAX;
+	hash >>= CHAR_BIT;
+	int fp = hash % sizeof(buf->filter);
+	int cp = hash % sizeof(buf->cache);
+
+	if (buf->filter[fp] & v != v)
+		res = 0;
+	if (buf->cache[cp] && buf->cache[cp])
+}
 
 static int filldir(struct dir_context *ctx, const char *name, int namlen,
 		   loff_t offset, u64 ino, unsigned int d_type)
@@ -227,6 +253,7 @@ SYSCALL_DEFINE3(getdents, unsigned int, fd,
 	f = fdget_pos(fd);
 	if (!f.file)
 		return -EBADF;
+	buf.ctx.layer = file_inode(f.file);
 
 	error = iterate_dir(f.file, &buf.ctx);
 	if (error >= 0)
@@ -310,6 +337,7 @@ int ksys_getdents64(unsigned int fd, struct linux_dirent64 __user *dirent,
 	f = fdget_pos(fd);
 	if (!f.file)
 		return -EBADF;
+	buf.ctx.layer = file_inode(f.file);
 
 	error = iterate_dir(f.file, &buf.ctx);
 	if (error >= 0)
@@ -390,13 +418,22 @@ COMPAT_SYSCALL_DEFINE3(old_readdir, unsigned int, fd,
 		.ctx.actor = compat_fillonedir,
 		.dirent = dirent
 	};
+	struct inode *inode;
 
 	if (!f.file)
 		return -EBADF;
+	inode = file_inode(f.file);
 
+iterate:
+	buf.ctx.layer = inode;
 	error = iterate_dir(f.file, &buf.ctx);
 	if (buf.result)
 		error = buf.result;
+	else if (inode->i_op->get_precursor) {
+		inode = inode->i_op->get_precursor(inode);
+		if (inode)
+			goto iterate;
+	}
 
 	fdput_pos(f);
 	return error;
@@ -481,6 +518,7 @@ COMPAT_SYSCALL_DEFINE3(getdents, unsigned int, fd,
 	f = fdget_pos(fd);
 	if (!f.file)
 		return -EBADF;
+	buf.ctx.layer = file_inode(f.file);
 
 	error = iterate_dir(f.file, &buf.ctx);
 	if (error >= 0)

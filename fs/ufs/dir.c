@@ -432,13 +432,13 @@ static int
 ufs_readdir(struct file *file, struct dir_context *ctx)
 {
 	loff_t pos = ctx->pos;
-	struct inode *inode = file_inode(file);
+	struct inode *inode = ctx->layer;
 	struct super_block *sb = inode->i_sb;
 	unsigned int offset = pos & ~PAGE_MASK;
 	unsigned long n = pos >> PAGE_SHIFT;
 	unsigned long npages = dir_pages(inode);
 	unsigned chunk_mask = ~(UFS_SB(sb)->s_uspi->s_dirblksize - 1);
-	bool need_revalidate = !inode_eq_iversion(inode, file->f_version);
+	bool need_revalidate = inode == file_inode(file) && !inode_eq_iversion(inode, file->f_version);
 	unsigned flags = UFS_SB(sb)->s_flags;
 
 	UFSD("BEGIN\n");
