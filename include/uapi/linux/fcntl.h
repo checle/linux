@@ -89,6 +89,7 @@
 #define AT_STATX_SYNC_AS_STAT	0x0000	/* - Do whatever stat() does */
 #define AT_STATX_FORCE_SYNC	0x2000	/* - Force the attributes to be sync'd with the server */
 #define AT_STATX_DONT_SYNC	0x4000	/* - Don't sync attributes with the server */
+#define AT_STATX_ORIGIN		0x8000	/* Status information of clone origin */
 
 
 #endif /* _UAPI_LINUX_FCNTL_H */

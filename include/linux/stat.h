@@ -19,7 +19,7 @@
 #include <linux/time.h>
 #include <linux/uidgid.h>
 
-#define KSTAT_QUERY_FLAGS (AT_STATX_SYNC_TYPE)
+#define KSTAT_QUERY_FLAGS (AT_STATX_SYNC_TYPE|AT_STATX_ORIGIN)
 
 struct kstat {
 	u32		result_mask;	/* What fields the user got */
