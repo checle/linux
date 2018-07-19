@@ -1473,6 +1473,8 @@ struct inode *ext2_iget (struct super_block *sb, unsigned long ino)
 	}
 	ei->i_dtime = 0;
 	inode->i_generation = le32_to_cpu(raw_inode->i_generation);
+	ei->i_ancestor = le32_to_cpu(raw_inode->i_ancstr);
+	ei->i_origin = le32_to_cpu(raw_inode->i_orgn);
 	ei->i_state = 0;
 	ei->i_block_group = (ino - 1) / EXT2_INODES_PER_GROUP(inode->i_sb);
 	ei->i_dir_start_lookup = 0;
@@ -1603,6 +1605,8 @@ static int __ext2_write_inode(struct inode *inode, int do_sync)
 	}
 	
 	raw_inode->i_generation = cpu_to_le32(inode->i_generation);
+	raw_inode->i_ancstr = cpu_to_le32(ei->i_ancestor);
+	raw_inode->i_orgn = cpu_to_le32(ei->i_origin);
 	if (S_ISCHR(inode->i_mode) || S_ISBLK(inode->i_mode)) {
 		if (old_valid_dev(inode->i_rdev)) {
 			raw_inode->i_block[0] =
@@ -1633,6 +1637,19 @@ static int __ext2_write_inode(struct inode *inode, int do_sync)
 int ext2_write_inode(struct inode *inode, struct writeback_control *wbc)
 {
 	return __ext2_write_inode(inode, wbc->sync_mode == WB_SYNC_ALL);
+}
+
+int ext2_getattr(const struct path *path, struct kstat *stat,
+		 u32 request_mask, unsigned int query_flags)
+{
+	struct inode *inode = d_inode(path->dentry);
+	struct ext2_inode_info *ei = EXT2_I(inode);
+
+	if ((query_flags & AT_STATX_ORIGIN) && ei->i_origin)
+		inode = ext2_iget(inode->i_sb, ei->i_origin);
+
+	generic_fillattr(inode, stat);
+	return 0;
 }
 
 int ext2_setattr(struct dentry *dentry, struct iattr *iattr)

@@ -6,6 +6,7 @@
  * Remy Card (card@masi.ibp.fr)
  * Laboratoire MASI - Institut Blaise Pascal
  * Universite Pierre et Marie Curie (Paris VI)
+ * Copyright (C) 2018 Filip Daluge, Checle Ltd.
  *
  *  from
  *
@@ -29,6 +30,26 @@
 #include <linux/iversion.h>
 
 typedef struct ext2_dir_entry_2 ext2_dirent;
+
+int ext2_open_dir(struct inode *inode, struct file *file)
+{
+	struct ext2_dir_data *data;
+
+	data = kzalloc(sizeof(struct ext2_dir_data), GFP_KERNEL);
+	if (!data)
+		return -ENOMEM;
+
+	file->private_data = data;
+
+	return 0;
+}
+
+int ext2_release_dir(struct inode *inode, struct file *file)
+{
+	kfree(file->private_data);
+
+	return 0;
+}
 
 /*
  * Tests against MAX_REC_LEN etc were put in place for 64k block
@@ -283,11 +304,44 @@ static inline void ext2_set_de_type(ext2_dirent *de, struct inode *inode)
 		de->file_type = 0;
 }
 
+static int ext2_touch_name(struct file *file, const char *name, unsigned int len)
+{
+	int res = -1;
+	struct ext2_dir_data *data = file->private_data;
+	unsigned int hash = full_name_hash(data, name, len);
+	char v = hash & 0xFF;
+	int i = (hash >> 8) % sizeof(data->filter);
+	int j = (hash >> 8) % sizeof(data->cache);
+
+	if ((data->filter[i] & v) != v)
+		res = 0;
+
+	if (memcmp(name, data->cache[j], len) == 0 && len == strlen(data->cache[j]))
+		res = 1;
+
+	data->filter[i] |= v;
+
+	memcpy(data->cache[j], name, len);
+	data->cache[j][len] = 0;
+
+	return res;
+}
+
+struct inode *ext2_get_ancestor(struct inode *inode)
+{
+	struct ext2_inode_info *ei = EXT2_I(inode);
+
+	if (ei->i_ancestor)
+		return ext2_iget(inode->i_sb, ei->i_ancestor);
+	return NULL;
+}
+
 static int
 ext2_readdir(struct file *file, struct dir_context *ctx)
 {
 	loff_t pos = ctx->pos;
-	struct inode *inode = file_inode(file);
+	struct ext2_dir_data *data = file->private_data;
+	struct inode *inode = data->cur_inode;
 	struct super_block *sb = inode->i_sb;
 	unsigned int offset = pos & ~PAGE_MASK;
 	unsigned long n = pos >> PAGE_SHIFT;
@@ -334,11 +388,17 @@ ext2_readdir(struct file *file, struct dir_context *ctx)
 			}
 			if (de->inode) {
 				unsigned char d_type = DT_UNKNOWN;
+				int res;
 
 				if (types && de->file_type < EXT2_FT_MAX)
 					d_type = types[de->file_type];
 
-				if (!dir_emit(ctx, de->name, de->name_len,
+				res = ext2_touch_name(file, de->name, de->name_len);
+				if (res == -1) {
+					// TODO: lookup entry
+				}
+
+				if (!res && !dir_emit(ctx, de->name, de->name_len,
 						le32_to_cpu(de->inode),
 						d_type)) {
 					ext2_put_page(page);
@@ -348,6 +408,13 @@ ext2_readdir(struct file *file, struct dir_context *ctx)
 			ctx->pos += ext2_rec_len_from_disk(de->rec_len);
 		}
 		ext2_put_page(page);
+	}
+
+	inode = ext2_get_ancestor(inode);
+	if (inode) {
+		data->cur_inode = inode;
+		ctx->pos = 0;
+		return ext2_readdir(file, ctx);
 	}
 	return 0;
 }
@@ -442,12 +509,17 @@ ino_t ext2_inode_by_name(struct inode *dir, const struct qstr *child)
 	ino_t res = 0;
 	struct ext2_dir_entry_2 *de;
 	struct page *page;
-	
-	de = ext2_find_entry (dir, child, &page);
-	if (de) {
-		res = le32_to_cpu(de->inode);
-		ext2_put_page(page);
-	}
+
+	do {
+		de = ext2_find_entry (dir, child, &page);
+		if (de) {
+			if (de->file_type != EXT2_FT_WHT)
+				res = le32_to_cpu(de->inode);
+			ext2_put_page(page);
+			break;
+		}
+		dir = ext2_get_ancestor(dir);
+	} while (dir);
 	return res;
 }
 
@@ -560,8 +632,14 @@ got_it:
 	}
 	de->name_len = namelen;
 	memcpy(de->name, name, namelen);
-	de->inode = cpu_to_le32(inode->i_ino);
-	ext2_set_de_type (de, inode);
+	if (inode) {
+		de->inode = cpu_to_le32(inode->i_ino);
+		ext2_set_de_type (de, inode);
+	} else {
+		// TODO: set inode
+		de->inode = 0;
+		de->file_type = EXT2_FT_WHT;
+	}
 	err = ext2_commit_chunk(page, pos, rec_len);
 	dir->i_mtime = dir->i_ctime = current_time(dir);
 	EXT2_I(dir)->i_flags &= ~EXT2_BTREE_FL;
@@ -715,7 +793,102 @@ not_empty:
 	return 0;
 }
 
+static int ext2_clone_origin(struct inode *dir, struct dentry *dentry, struct inode *origin)
+{
+	struct ext2_inode_info *eo = EXT2_I(origin);
+	struct inode * inode;
+	struct ext2_inode_info *ei;
+	int err;
+
+	inode_inc_link_count(dir);
+
+	inode = ext2_new_inode(dir, S_IFDIR | (origin->i_mode & ~S_IFMT), &dentry->d_name);
+	err = PTR_ERR(inode);
+	if (IS_ERR(inode))
+		goto out_dir;
+	ei = EXT2_I(inode);
+
+	inode->i_op = &ext2_dir_inode_operations;
+	inode->i_fop = &ext2_dir_operations;
+	if (test_opt(inode->i_sb, NOBH))
+		inode->i_mapping->a_ops = &ext2_nobh_aops;
+	else
+		inode->i_mapping->a_ops = &ext2_aops;
+
+	ei->i_ancestor = origin->i_ino;
+	ei->i_origin = eo->i_origin;
+	inode->i_uid = origin->i_uid;
+	inode->i_gid = origin->i_gid;
+	inode->i_atime = origin->i_atime;
+	inode->i_ctime = origin->i_ctime;
+	inode->i_mtime = origin->i_mtime;
+
+	inode_inc_link_count(inode);
+
+	err = ext2_make_empty(inode, dir);
+	if (err)
+		goto out_fail;
+
+	err = ext2_add_link(dentry, inode);
+	if (err)
+		goto out_fail;
+
+	d_instantiate(dentry, inode);
+
+	return 0;
+
+out_fail:
+	inode_dec_link_count(inode);
+	inode_dec_link_count(inode);
+	unlock_new_inode(inode);
+	iput(inode);
+out_dir:
+	inode_dec_link_count(dir);
+	return err;
+}
+
+int ext2_clone_dir_range(struct file *old_file, loff_t old_off,
+		struct file *new_file, loff_t new_off, u64 len)
+{
+	struct dentry *old_dentry = old_file->f_path.dentry;
+	struct dentry *new_dentry = new_file->f_path.dentry;
+	struct inode *old_dir = d_inode(old_dentry->d_parent);
+	struct inode *new_dir = d_inode(new_dentry->d_parent);
+	struct inode *inode = d_inode(new_dentry);
+	struct inode *old_inode, *new_inode;
+	struct ext2_inode_info *new_ei;
+	int err;
+
+	if (old_off || new_off || len)
+		return -ENOTSUPP;
+
+	err = ext2_clone_origin(old_dir, old_dentry, inode);
+	old_inode = d_inode(old_dentry);
+	if (err)
+		goto fail_old;
+
+	err = ext2_clone_origin(new_dir, new_dentry, inode);
+	if (err)
+		goto fail_new;
+	new_inode = d_inode(new_dentry);
+	new_ei = EXT2_I(new_inode);
+	new_ei->i_origin = new_inode->i_ino;
+
+	unlock_new_inode(old_inode);
+	unlock_new_inode(new_inode);
+	return 0;
+
+fail_new:
+	old_dir->i_op->unlink(old_dir, old_dentry);
+fail_old:
+	inode_dec_link_count(inode);
+	iput(inode);
+	return err;
+}
+
 const struct file_operations ext2_dir_operations = {
+	.open		= ext2_open_dir,
+	.release	= ext2_release_dir,
 	.llseek		= generic_file_llseek,
 	.read		= generic_read_dir,
 	.iterate_shared	= ext2_readdir,
@@ -724,4 +897,5 @@ const struct file_operations ext2_dir_operations = {
 	.compat_ioctl	= ext2_compat_ioctl,
 #endif
 	.fsync		= ext2_fsync,
+	.clone_file_range = ext2_clone_dir_range,
 };

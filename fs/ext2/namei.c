@@ -271,6 +271,7 @@ out_dir:
 static int ext2_unlink(struct inode * dir, struct dentry *dentry)
 {
 	struct inode * inode = d_inode(dentry);
+	struct inode * cur_dir = dir;
 	struct ext2_dir_entry_2 * de;
 	struct page * page;
 	int err;
@@ -279,13 +280,22 @@ static int ext2_unlink(struct inode * dir, struct dentry *dentry)
 	if (err)
 		goto out;
 
-	de = ext2_find_entry (dir, &dentry->d_name, &page);
-	if (!de) {
+	do {
+		de = ext2_find_entry (cur_dir, &dentry->d_name, &page);
+		if (de)
+			break;
+		cur_dir = ext2_get_ancestor(cur_dir);
+	} while (cur_dir);
+
+	if (!de || de->file_type == EXT2_FT_WHT) {
 		err = -ENOENT;
 		goto out;
 	}
 
-	err = ext2_delete_entry (de, page);
+	if (dir == cur_dir)
+		err = ext2_delete_entry (de, page);
+	else
+		err = ext2_add_link(dentry, NULL);
 	if (err)
 		goto out;
 
@@ -419,6 +429,7 @@ const struct inode_operations ext2_dir_inode_operations = {
 #ifdef CONFIG_EXT2_FS_XATTR
 	.listxattr	= ext2_listxattr,
 #endif
+	.getattr	= ext2_getattr,
 	.setattr	= ext2_setattr,
 	.get_acl	= ext2_get_acl,
 	.set_acl	= ext2_set_acl,

@@ -185,6 +185,12 @@ static inline struct ext2_sb_info *EXT2_SB(struct super_block *sb)
 #define EXT2_FIRST_INO(s)		(EXT2_SB(s)->s_first_ino)
 
 /*
+ * Directory entry cache
+ */
+#define	EXT2_DIR_CACHE_SIZE		10
+#define	EXT2_DIR_FILTER_SIZE		10
+
+/*
  * Macro-instructions used to manage fragments
  */
 #define EXT2_MIN_FRAG_SIZE		1024
@@ -313,7 +319,7 @@ struct ext2_inode {
 	__le32	i_flags;	/* File flags */
 	union {
 		struct {
-			__le32  l_i_reserved1;
+			__le32	l_i_ancestor;	/* Clone ancestor */
 		} linux1;
 		struct {
 			__le32  h_i_translator;
@@ -334,7 +340,7 @@ struct ext2_inode {
 			__u16	i_pad1;
 			__le16	l_i_uid_high;	/* these 2 fields    */
 			__le16	l_i_gid_high;	/* were reserved2[0] */
-			__u32	l_i_reserved2;
+			__le32	l_i_origin;	/* Clone origin */
 		} linux2;
 		struct {
 			__u8	h_i_frag;	/* Fragment number */
@@ -355,14 +361,14 @@ struct ext2_inode {
 
 #define i_size_high	i_dir_acl
 
-#define i_reserved1	osd1.linux1.l_i_reserved1
+#define i_ancstr	osd1.linux1.l_i_ancestor
 #define i_frag		osd2.linux2.l_i_frag
 #define i_fsize		osd2.linux2.l_i_fsize
 #define i_uid_low	i_uid
 #define i_gid_low	i_gid
 #define i_uid_high	osd2.linux2.l_i_uid_high
 #define i_gid_high	osd2.linux2.l_i_gid_high
-#define i_reserved2	osd2.linux2.l_i_reserved2
+#define i_orgn		osd2.linux2.l_i_origin
 
 /*
  * File system states
@@ -620,6 +626,7 @@ enum {
 	EXT2_FT_FIFO		= 5,
 	EXT2_FT_SOCK		= 6,
 	EXT2_FT_SYMLINK		= 7,
+	EXT2_FT_WHT		= 8,
 	EXT2_FT_MAX
 };
 
@@ -653,6 +660,15 @@ struct ext2_mount_options {
 };
 
 /*
+ * ext2 private directory data
+ */
+struct ext2_dir_data {
+	struct inode *cur_inode;
+	char filter[EXT2_DIR_FILTER_SIZE];
+	char cache[EXT2_DIR_CACHE_SIZE][EXT2_NAME_LEN + 1];
+};
+
+/*
  * second extended file system inode data in memory
  */
 struct ext2_inode_info {
@@ -665,6 +681,8 @@ struct ext2_inode_info {
 	__u32	i_file_acl;
 	__u32	i_dir_acl;
 	__u32	i_dtime;
+	__u32	i_origin;
+	__u32	i_ancestor;
 
 	/*
 	 * i_block_group is the number of the block group which contains
@@ -765,6 +783,7 @@ extern int ext2_delete_entry (struct ext2_dir_entry_2 *, struct page *);
 extern int ext2_empty_dir (struct inode *);
 extern struct ext2_dir_entry_2 * ext2_dotdot (struct inode *, struct page **);
 extern void ext2_set_link(struct inode *, struct ext2_dir_entry_2 *, struct page *, struct inode *, int);
+extern struct inode *ext2_get_ancestor(struct inode *inode);
 
 /* ialloc.c */
 extern struct inode * ext2_new_inode (struct inode *, umode_t, const struct qstr *);
@@ -777,6 +796,7 @@ extern struct inode *ext2_iget (struct super_block *, unsigned long);
 extern int ext2_write_inode (struct inode *, struct writeback_control *);
 extern void ext2_evict_inode(struct inode *);
 extern int ext2_get_block(struct inode *, sector_t, struct buffer_head *, int);
+extern int ext2_getattr(const struct path *, struct kstat *, u32, unsigned int);
 extern int ext2_setattr (struct dentry *, struct iattr *);
 extern void ext2_set_inode_flags(struct inode *inode);
 extern int ext2_fiemap(struct inode *inode, struct fiemap_extent_info *fieinfo,
