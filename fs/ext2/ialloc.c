@@ -567,8 +567,7 @@ got:
 	ei->i_file_acl = 0;
 	ei->i_dir_acl = 0;
 	ei->i_dtime = 0;
-	ei->i_origin = EXT2_I(dir)->i_origin;
-	ei->i_ancestor = 0;
+	ei->i_base = 0;
 	ei->i_block_alloc_info = NULL;
 	ei->i_block_group = group;
 	ei->i_dir_start_lookup = 0;

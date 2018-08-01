@@ -271,6 +271,7 @@ out_dir:
 static int ext2_unlink(struct inode * dir, struct dentry *dentry)
 {
 	struct inode * inode = d_inode(dentry);
+	struct inode * base = ext2_get_base(inode);
 	struct inode * cur_dir = dir;
 	struct ext2_dir_entry_2 * de;
 	struct page * page;
@@ -284,7 +285,7 @@ static int ext2_unlink(struct inode * dir, struct dentry *dentry)
 		de = ext2_find_entry (cur_dir, &dentry->d_name, &page);
 		if (de)
 			break;
-		cur_dir = ext2_get_ancestor(cur_dir);
+		cur_dir = ext2_get_base(cur_dir);
 	} while (cur_dir);
 
 	if (!de || de->file_type == EXT2_FT_WHT) {
@@ -301,6 +302,8 @@ static int ext2_unlink(struct inode * dir, struct dentry *dentry)
 
 	inode->i_ctime = dir->i_ctime;
 	inode_dec_link_count(inode);
+	if (base) // TODO: delete base if only linked by inode
+		inode_dec_link_count(base);
 	err = 0;
 out:
 	return err;

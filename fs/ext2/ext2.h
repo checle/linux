@@ -319,7 +319,7 @@ struct ext2_inode {
 	__le32	i_flags;	/* File flags */
 	union {
 		struct {
-			__le32	l_i_ancestor;	/* Clone ancestor */
+			__le32  l_i_reserved1;
 		} linux1;
 		struct {
 			__le32  h_i_translator;
@@ -340,7 +340,7 @@ struct ext2_inode {
 			__u16	i_pad1;
 			__le16	l_i_uid_high;	/* these 2 fields    */
 			__le16	l_i_gid_high;	/* were reserved2[0] */
-			__le32	l_i_origin;	/* Clone origin */
+			__le32	l_i_baseno;	/* Clone base */
 		} linux2;
 		struct {
 			__u8	h_i_frag;	/* Fragment number */
@@ -361,14 +361,14 @@ struct ext2_inode {
 
 #define i_size_high	i_dir_acl
 
-#define i_ancstr	osd1.linux1.l_i_ancestor
+#define i_reserved1	osd1.linux1.l_i_reserved1
 #define i_frag		osd2.linux2.l_i_frag
 #define i_fsize		osd2.linux2.l_i_fsize
 #define i_uid_low	i_uid
 #define i_gid_low	i_gid
 #define i_uid_high	osd2.linux2.l_i_uid_high
 #define i_gid_high	osd2.linux2.l_i_gid_high
-#define i_orgn		osd2.linux2.l_i_origin
+#define i_baseno	osd2.linux2.l_i_baseno
 
 /*
  * File system states
@@ -664,8 +664,7 @@ struct ext2_mount_options {
  */
 struct ext2_dir_data {
 	struct inode *cur_inode;
-	char filter[EXT2_DIR_FILTER_SIZE];
-	char cache[EXT2_DIR_CACHE_SIZE][EXT2_NAME_LEN + 1];
+	char bloom_filter[EXT2_DIR_FILTER_SIZE];
 };
 
 /*
@@ -681,8 +680,7 @@ struct ext2_inode_info {
 	__u32	i_file_acl;
 	__u32	i_dir_acl;
 	__u32	i_dtime;
-	__u32	i_origin;
-	__u32	i_ancestor;
+	__u32	i_base;
 
 	/*
 	 * i_block_group is the number of the block group which contains
@@ -783,7 +781,7 @@ extern int ext2_delete_entry (struct ext2_dir_entry_2 *, struct page *);
 extern int ext2_empty_dir (struct inode *);
 extern struct ext2_dir_entry_2 * ext2_dotdot (struct inode *, struct page **);
 extern void ext2_set_link(struct inode *, struct ext2_dir_entry_2 *, struct page *, struct inode *, int);
-extern struct inode *ext2_get_ancestor(struct inode *inode);
+extern struct inode *ext2_get_base(struct inode *inode);
 
 /* ialloc.c */
 extern struct inode * ext2_new_inode (struct inode *, umode_t, const struct qstr *);

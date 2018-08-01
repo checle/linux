@@ -310,29 +310,21 @@ static int ext2_touch_name(struct file *file, const char *name, unsigned int len
 	struct ext2_dir_data *data = file->private_data;
 	unsigned int hash = full_name_hash(data, name, len);
 	char v = hash & 0xFF;
-	int i = (hash >> 8) % sizeof(data->filter);
-	int j = (hash >> 8) % sizeof(data->cache);
+	int i = (hash >> 8) % sizeof(data->bloom_filter);
 
-	if ((data->filter[i] & v) != v)
+	if ((data->bloom_filter[i] & v) != v)
 		res = 0;
-
-	if (memcmp(name, data->cache[j], len) == 0 && len == strlen(data->cache[j]))
-		res = 1;
-
-	data->filter[i] |= v;
-
-	memcpy(data->cache[j], name, len);
-	data->cache[j][len] = 0;
+	data->bloom_filter[i] |= v;
 
 	return res;
 }
 
-struct inode *ext2_get_ancestor(struct inode *inode)
+struct inode *ext2_get_base(struct inode *inode)
 {
 	struct ext2_inode_info *ei = EXT2_I(inode);
 
-	if (ei->i_ancestor)
-		return ext2_iget(inode->i_sb, ei->i_ancestor);
+	if (ei->i_base)
+		return ext2_iget(inode->i_sb, ei->i_base);
 	return NULL;
 }
 
@@ -388,17 +380,24 @@ ext2_readdir(struct file *file, struct dir_context *ctx)
 			}
 			if (de->inode) {
 				unsigned char d_type = DT_UNKNOWN;
-				int res;
+				int wht;
 
 				if (types && de->file_type < EXT2_FT_MAX)
 					d_type = types[de->file_type];
 
-				res = ext2_touch_name(file, de->name, de->name_len);
-				if (res == -1) {
-					// TODO: lookup entry
+				wht = ext2_touch_name(file, de->name, de->name_len);
+				if (wht < 0) {
+					struct qstr name = {
+						.name = de->name,
+						.len = de->name_len,
+					};
+					struct inode *dir = file_inode(file);
+					ino_t ino = ext2_inode_by_name(dir, &name);
+
+					wht = de->inode != ino;
 				}
 
-				if (!res && !dir_emit(ctx, de->name, de->name_len,
+				if (!wht && !dir_emit(ctx, de->name, de->name_len,
 						le32_to_cpu(de->inode),
 						d_type)) {
 					ext2_put_page(page);
@@ -410,7 +409,7 @@ ext2_readdir(struct file *file, struct dir_context *ctx)
 		ext2_put_page(page);
 	}
 
-	inode = ext2_get_ancestor(inode);
+	inode = ext2_get_base(inode);
 	if (inode) {
 		data->cur_inode = inode;
 		ctx->pos = 0;
@@ -518,7 +517,7 @@ ino_t ext2_inode_by_name(struct inode *dir, const struct qstr *child)
 			ext2_put_page(page);
 			break;
 		}
-		dir = ext2_get_ancestor(dir);
+		dir = ext2_get_base(dir);
 	} while (dir);
 	return res;
 }
@@ -793,30 +792,39 @@ not_empty:
 	return 0;
 }
 
-static int ext2_exchange_data(struct inode *inode1, struct inode *inode2)
+static int ext2_swap_data(struct inode *inode1, struct inode *inode2)
 {
 	struct ext2_inode_info *ei2, *ei1;
-	struct address_space data;
+	struct address_space as;
+	blkcnt_t b;
+	__le32 d;
 	int i;
 
-	memcpy(&data, &inode1->i_data, sizeof(struct address_space));
+	memcpy(&as, &inode1->i_data, sizeof(struct address_space));
 	memcpy(&inode1->i_data, &inode2->i_data, sizeof(struct address_space));
-	memcpy(&inode2->i_data, &data, sizeof(struct address_space));
+	memcpy(&inode2->i_data, &as, sizeof(struct address_space));
+
+	memcpy(&as, &inode1->i_mapping, sizeof(struct address_space));
+	memcpy(&inode1->i_mapping, &inode2->i_mapping, sizeof(struct address_space));
+	memcpy(&inode2->i_mapping, &as, sizeof(struct address_space));
+
+	b = inode1->i_blocks;
+	inode1->i_blocks = inode2->i_blocks;
+	inode2->i_blocks = b;
 
 	ei2 = EXT2_I(inode1);
 	ei1 = EXT2_I(inode2);
 
 	for (i = 0; i < EXT2_N_BLOCKS; i++) {
-		__le32 v = ei1->i_data[i];
-
+		d = ei1->i_data[i];
 		ei1->i_data[i] = ei2->i_data[i];
-		ei2->i_data[i] = v;
+		ei2->i_data[i] = d;
 	}
 
 	return 0;
 }
 
-static struct inode *ext2_new_ancestor(struct dentry *dentry)
+static struct inode *ext2_new_base(struct dentry *dentry)
 {
 	struct inode *template = d_inode(dentry);
 	struct inode *dir = d_inode(dentry->d_parent);
@@ -827,7 +835,7 @@ static struct inode *ext2_new_ancestor(struct dentry *dentry)
 	if (IS_ERR(inode))
 		return inode;
 
-	EXT2_I(inode)->i_ancestor = EXT2_I(template)->i_ancestor;
+	EXT2_I(inode)->i_base = EXT2_I(template)->i_base;
 
 	inode->i_op = &ext2_dir_inode_operations;
 	inode->i_fop = &ext2_dir_operations;
@@ -840,7 +848,7 @@ static struct inode *ext2_new_ancestor(struct dentry *dentry)
 	if (err)
 		goto fail;
 
-	err = ext2_exchange_data(template, inode);
+	err = ext2_swap_data(template, inode);
 	if (err)
 		goto fail;
 
@@ -853,48 +861,49 @@ fail:
 	return ERR_PTR(err);
 }
 
-int ext2_clone_dir_range(struct file *file1, loff_t off1,
-		struct file *file2, loff_t off2, u64 len)
+int ext2_clone_dir_range(struct file *dir1, loff_t off1,
+		struct file *dir2, loff_t off2, u64 len)
 {
-	struct dentry *dentry1 = file1->f_path.dentry;
-	struct dentry *dentry_2 = file2->f_path.dentry;
-	struct inode *inode1 = d_inode(dentry1), *inode2, *ancestor;
+	struct dentry *dentry1 = dir1->f_path.dentry;
+	struct dentry *dentry2 = dir2->f_path.dentry;
+	struct inode *inode1 = d_inode(dentry1);
+	struct inode *inode2 = d_inode(dentry2);
+	struct inode *base;
 	int err;
 
 	if (off1 || off2 || len)
 		return -EISDIR;
 
-	ancestor = ext2_new_ancestor(dentry1);
-	err = PTR_ERR(ancestor);
-	if (IS_ERR(ancestor))
+	if (!S_ISDIR(inode2->i_mode))
+		return -ENOTDIR;
+
+	if (!ext2_empty_dir(inode2))
+		return -ENOTEMPTY;
+
+	base = ext2_new_base(dentry1);
+	err = PTR_ERR(base);
+	if (IS_ERR(base))
+		goto out;
+
+	EXT2_I(inode1)->i_base = base->i_ino;
+	inode_inc_link_count(base);
+
+	EXT2_I(inode2)->i_base = base->i_ino;
+	inode_inc_link_count(base);
+
+	err = ext2_add_link(dentry2, inode2);
+	if (err)
 		goto fail;
 
-	EXT2_I(inode1)->i_ancestor = ancestor->i_ino;
-
-	inode2 = ext2_new_ancestor(dentry1);
-	err = PTR_ERR(inode2);
-	if (IS_ERR(inode2))
-		goto fail_ancestor;
-
-	EXT2_I(inode2)->i_origin = inode2->i_ino;
-
-	err = ext2_add_link(dentry_2, inode2);
-	if (err)
-		goto fail_inode2;
-
-	unlock_new_inode(ancestor);
+	unlock_new_inode(base);
 	unlock_new_inode(inode2);
-	return err;
+	goto out;
 
-fail_inode2:
-	clear_nlink(inode2);
-	unlock_new_inode(inode2);
-	iput(inode2);
-fail_ancestor:
-	clear_nlink(ancestor);
-	unlock_new_inode(ancestor);
-	iput(ancestor);
 fail:
+	clear_nlink(base);
+	unlock_new_inode(base);
+	iput(base);
+out:
 	return err;
 }
 
